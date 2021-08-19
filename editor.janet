@@ -6,8 +6,8 @@
 (use freja-jaylib)
 (use freja/defonce)
 
-(defonce canvas-state @{:width 300
-                        :height 300
+(defonce canvas-state @{:width 16
+                        :height 16
                         :zoom 1
                         :size 1
                         :hue 0.5
@@ -15,7 +15,7 @@
                         :nof-undo 0})
 
 (update canvas-state :color |(or $ [0 0 0]))
-(update canvas-state :bg-color |(or $ :white))
+(update canvas-state :bg-color |(or $ :red))
 
 (unless (canvas-state :render-texture)
   (put canvas-state :render-texture
@@ -55,11 +55,7 @@
 (defn clear
   [state]
   (print "clearing")
-  #  (clear-background 0x00000000)
-
-  (draw-rectangle-rec [0 0 (state :width)
-                       (state :height)]
-                      (state :bg-color)))
+  (clear-background 0x00000000))
 
 (defn clear-undos
   [state]
@@ -169,11 +165,12 @@
 
   (let [modpos ;(zoom-pos-smaller (state :zoom) pos)
         [x y] modpos
+        size (state :size)
         height (state :height)]
     (push-action state |(update-texture-rec
                           (get-render-texture rt)
-                          [x (- height y) 4 4]
-                          (array/new-filled (* 4 4) 0xff00ff00)))
+                          [x (- (- height y) size) size size]
+                          (array/new-filled (* size size) 0xff00ff00)))
     (put state :last-pos modpos)))
 
 
@@ -190,12 +187,7 @@
         (inner-erase state pos))
 
       [:drag pos]
-      (inner-erase state pos)
-
-      [:release pos]
-      (do
-        (push-action state |(put state :last-pos nil))
-        (end-action state)))
+      (inner-erase state pos))
 
     (match ev
       [:scroll n]
@@ -209,12 +201,7 @@
         (inner-draw state pos))
 
       [:drag pos]
-      (inner-draw state pos)
-
-      [:release pos]
-      (do
-        (push-action state |(put state :last-pos nil))
-        (end-action state)))))
+      (inner-draw state pos))))
 
 
 (defn hsv->rgb
@@ -250,8 +237,8 @@
     [{:width w :height h} x y]
     (if-let [c (get (get colors x) y)]
       (do c)
-      (let [s (/ x w)
-            v (- 1 (/ y h))
+      (let [s (/ (max 0 (min w x)) w)
+            v (- 1 (/ (max 0 (min y h)) h))
             c (hsv->rgb (canvas :hue) s v)]
         (put-in colors [x y] c)
         c)))
@@ -290,10 +277,18 @@
         (def oy (dyn :offset-y))
 
         (match ev
+          [:release _]
+          (put state :dragging false)
+
           [kind [x y]]
           (let [pos [(- x ox)
                      (- y oy)]]
-            (when (c/in-rec? pos [0 0 (self :width) (self :height)])
+            (when (or (c/in-rec? pos [0 0 (self :width) (self :height)])
+                      (and (state :dragging)
+                           (= kind :drag)))
+
+              (put state :dragging true)
+
               (cp-handle-ev self [kind pos])
               true))
 
@@ -486,71 +481,93 @@
   (def {:width w
         :height h
         :render-texture rt} props)
-  (merge-into (dyn :element)
-              @{:on-event
-                (fn [self ev]
-                  (def ox (dyn :offset-x))
-                  (def oy (dyn :offset-y))
+  (merge-into
+    (dyn :element)
+    @{:on-event
+      (fn [self ev]
+        (def ox (dyn :offset-x))
+        (def oy (dyn :offset-y))
 
-                  (match ev
-                    [kind [x y]]
-                    (let [pos [(- x ox)
-                               (- y oy)]]
-                      (put props :last-mouse-pos pos)
-                      (when (c/in-rec? (v2* pos (/ 1 (props :zoom)))
-                                       [0 0 w h])
-                        (handle-ev
-                          props
-                          [kind pos])
-                        true))
+        (match ev
+          [kind [x y]]
+          (let [pos [(- x ox)
+                     (- y oy)]]
 
-                    [kind n [x y]]
-                    (let [pos [(- x ox)
-                               (- y oy)]]
-                      (when (c/in-rec? (v2* pos (/ 1 (props :zoom)))
-                                       [0 0 w h])
-                        (handle-ev
-                          props
-                          [kind n pos])
-                        true))
+            (when (= kind :release)
+              (when (props :current-action)
+                (end-action props))
+              (put props :dragging false)
+              (put props :last-pos nil))
 
-                    false))
-                :render
-                (fn [{:width w :height h} ox oy]
-                  (-> (get-render-texture rt)
-                      (draw-texture-pro
-                        [0
-                         0
-                         (/ w (props :zoom))
-                         (/ (- h) (props :zoom))]
-                        [0 0 (* w 1) (* h 1)]
-                        [0 0]
-                        0
-                        :white))
+            (when (c/in-rec? (v2* pos (/ 1 (props :zoom)))
+                             [0 0 w h])
+              (when (= kind :press)
+                (put props :dragging true))
 
-                  (when-let [[x y] #(props :last-mouse-pos)
-                             (get-mouse-position)
-                             x (- x ox)
-                             y (- y oy)]
-                    (if (and (> x 0)
-                             (< x w))
-                      (hide-cursor)
-                      (show-cursor))
-                    (draw-rectangle
-                      (* (props :zoom)
-                         (math/floor (/ x (props :zoom))))
-                      (* (props :zoom)
-                         (math/floor (/ y (props :zoom))))
-                      (props :zoom)
-                      (props :zoom)
-                      :purple)))
+              (put props :last-mouse-pos pos)
+              (when (props :dragging)
+                (handle-ev
+                  props
+                  [kind pos])
+                true)))
 
-                :relative-sizing rs/block-sizing
-                :children []
-                :preset-width (* (props :zoom) w)
-                :preset-height (* (props :zoom) h)
-                :props {:width (* (props :zoom) w)
-                        :height (* (props :zoom) h)}}))
+          [kind n [x y]]
+          (let [pos [(- x ox)
+                     (- y oy)]]
+            (when (c/in-rec? (v2* pos (/ 1 (props :zoom)))
+                             [0 0 w h])
+              (handle-ev
+                props
+                [kind n pos])
+              true))
+
+          false))
+      :render
+      (fn [{:width w :height h} ox oy]
+        (-> (get-render-texture rt)
+            (draw-texture-pro
+              [0
+               0
+               (/ w (props :zoom))
+               (/ (- h) (props :zoom))]
+              [0 0 (* w 1) (* h 1)]
+              [0 0]
+              0
+              :white))
+
+        (when-let [[x y] #(props :last-mouse-pos)
+                   (get-mouse-position)
+                   x (- x ox)
+                   y (- y oy)]
+          (if (and (> x 0)
+                   (< x w))
+            (hide-cursor)
+            (show-cursor))
+          (draw-rectangle
+            (* (props :zoom)
+               (math/floor (/ x (props :zoom))))
+            (* (props :zoom)
+               (math/floor (/ y (props :zoom))))
+            (* (props :zoom)
+               (props :size))
+            (* (props :zoom)
+               (props :size))
+            :purple)))
+
+      :relative-sizing rs/block-sizing
+      :children []
+      :preset-width (* (props :zoom) w)
+      :preset-height (* (props :zoom) h)
+      :props {:width (* (props :zoom) w)
+              :height (* (props :zoom) h)}}))
+
+(defn save
+  [filename]
+  (-> (canvas-state :render-texture)
+      get-render-texture
+      get-texture-data
+      image-flip-vertical # render textures are upside down
+      (export-image filename)))
 
 (defn hiccup
   [props & _]
@@ -571,12 +588,6 @@
         [:text {:color :white
                 :size 22
                 :text (string "Nof actions: " (length (get-in props [:canvas :actions])))}]]]
-
-      [:text {:color :white
-              :size 22
-              :text (if (get-in props [:canvas :erase])
-                      "Erasing"
-                      "")}]
       [:block {:width 150 :height 150}
        [:background {:color :gray}
         [:padding {:all 6}
@@ -595,6 +606,7 @@
 (e/put! state/editor-state :right hiccup)
 
 (comment
+
   (h/new-layer :pixel-editor
                hiccup
                props)
