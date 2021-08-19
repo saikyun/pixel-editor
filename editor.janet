@@ -3,6 +3,9 @@
 (import freja/hiccup :as h)
 (import freja-layout/sizing/relative :as rs)
 (import freja/collision :as c)
+(import freja/textarea :as ta)
+(import freja/input)
+(import freja/new_gap_buffer :as gb)
 (use freja-jaylib)
 (use freja/defonce)
 
@@ -12,10 +15,11 @@
                         :size 1
                         :hue 0.5
                         :actions @[]
-                        :nof-undo 0})
+                        :nof-undo 0
+                        :unsaved nil})
 
 (update canvas-state :color |(or $ [0 0 0]))
-(update canvas-state :bg-color |(or $ :red))
+(update canvas-state :bg-color |(or $ :white))
 
 (unless (canvas-state :render-texture)
   (put canvas-state :render-texture
@@ -75,6 +79,8 @@
 (defn push-action
   [state f]
   (clear-undos state)
+
+  (put state :unsaved true)
 
   (update state
           (if (state :current-action)
@@ -143,18 +149,37 @@
   [[x y] v]
   [(math/floor (* x v)) (math/floor (* y v))])
 
+(defn rgb->hex
+  [[r g b &opt a]]
+  (default a 1)
+
+  (+ (blshift (math/floor (* 255 r)) (* 4 6))
+     (blshift (math/floor (* 255 g)) (* 4 4))
+     (blshift (math/floor (* 255 b)) (* 4 2))
+     (blshift (math/floor (* 255 a)) 0)))
+
 (defn inner-draw
   [state pos]
   (def {:render-texture rt} state)
 
   (begin-texture-mode rt)
 
-  (let [modpos (zoom-pos-smaller (state :zoom) pos)]
+  (let [modpos ;(zoom-pos-smaller (state :zoom) pos)
+        [x y] modpos
+        size (state :size)
+        height (state :height)]
     (def args [(state :last-pos)
                (state :size)
                modpos
                (state :color)])
-    (push-action state |(draw ;args))
+    #(push-action state |(draw ;args))
+
+    (push-action state |(update-texture-rec
+                          (get-render-texture rt)
+                          [x (- (- height y) size) size size]
+                          (array/new-filled (* size size)
+                                            (rgb->hex (state :color)))))
+
     (put state :last-pos modpos))
 
   (end-texture-mode))
@@ -170,7 +195,9 @@
     (push-action state |(update-texture-rec
                           (get-render-texture rt)
                           [x (- (- height y) size) size size]
-                          (array/new-filled (* size size) 0xff00ff00)))
+                          (array/new-filled
+                            (* size size)
+                            0x00000000)))
     (put state :last-pos modpos)))
 
 
@@ -561,33 +588,67 @@
       :props {:width (* (props :zoom) w)
               :height (* (props :zoom) h)}}))
 
-(defn save
+(varfn save
   [filename]
   (-> (canvas-state :render-texture)
       get-render-texture
       get-texture-data
       image-flip-vertical # render textures are upside down
-      (export-image filename)))
+      (export-image filename))
+
+  (:put canvas-state :unsaved nil))
 
 (defn hiccup
   [props & _]
   [:background {:color 0x000000ff}
+   (when (props :saving)
+     (unless (props :save-state)
+       (put props :save-state
+            (ta/default-textarea-state
+              :binds
+              (-> @{}
+                  (table/setproto input/file-open-binds)
+                  (merge-into
+                    @{:escape (fn [_]
+                                (print "escape?")
+                                (e/put! props :saving nil))
+                      :enter (fn [self]
+                               (save (string (gb/content self)
+                                             ".png"))
+                               (e/put! props :saving nil))})))))
+
+     [:background {:color 0x999999ff}
+      [:row {:height 30}
+       [:padding {:all 3}
+        [:text {:size 22
+                :text "Save as: "}]]
+       [:block {:weight 1}
+        (let [state (props :save-state)]
+          [ta/textarea {:state state
+                        :init
+                        (defn focus-textarea-on-init [self _]
+                          (e/put! state/focus :focus state))
+                        :text/size 22}])]
+       [:text {:size 22
+               :text ".png"}]]])
+
    [:padding {:all 24
               :bottom 260}
+    [:background {:color 0x999999ff}
+     [:clickable {:on-click
+                  (fn [_]
+                    (e/put! props :saving true))}
+      [:padding {:all 6}
+       [:text {:size 18
+               :text (string "Save" (when (get-in props [:canvas :unsaved]) "*"))}]]]]
+
     [:block {}
      [:row {}
       [:block {:min-width 75}
        [tools (props :canvas)]]
       [:block {}
        [:background {:color (get-in props [:canvas :bg-color])}
-        [canvas (props :canvas)]]
-       [:text {:color :white
-               :size 22
-               :text (string "Nof undos: " (get-in props [:canvas :nof-undo]))}]
-       [:padding {:left 12}
-        [:text {:color :white
-                :size 22
-                :text (string "Nof actions: " (length (get-in props [:canvas :actions])))}]]]
+        [canvas (props :canvas)]]]
       [:block {:width 150 :height 150}
        [:background {:color :gray}
         [:padding {:all 6}
