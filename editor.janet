@@ -6,8 +6,8 @@
 (use freja-jaylib)
 (use freja/defonce)
 
-(defonce canvas-state @{:width 16
-                        :height 16
+(defonce canvas-state @{:width 300
+                        :height 300
                         :zoom 1
                         :size 1
                         :hue 0.5
@@ -149,41 +149,72 @@
 
 (defn inner-draw
   [state pos]
+  (def {:render-texture rt} state)
+
+  (begin-texture-mode rt)
+
   (let [modpos (zoom-pos-smaller (state :zoom) pos)]
     (def args [(state :last-pos)
                (state :size)
                modpos
                (state :color)])
     (push-action state |(draw ;args))
+    (put state :last-pos modpos))
+
+  (end-texture-mode))
+
+(defn inner-erase
+  [state pos]
+  (def {:render-texture rt} state)
+
+  (let [modpos ;(zoom-pos-smaller (state :zoom) pos)
+        [x y] modpos
+        height (state :height)]
+    (push-action state |(update-texture-rec
+                          (get-render-texture rt)
+                          [x (- height y) 4 4]
+                          (array/new-filled (* 4 4) 0xff00ff00)))
     (put state :last-pos modpos)))
 
 
 (defn handle-ev
   [state ev]
-  (def {:render-texture rt} state)
+  (def {:render-texture rt
+        :erase erase} state)
 
-  (begin-texture-mode rt)
+  (if erase
+    (match ev
+      [:press pos]
+      (do
+        (begin-action state)
+        (inner-erase state pos))
 
-  (match ev
-    [:scroll n]
-    (if (pos? n)
-      (:update state :zoom inc)
-      (:update state :zoom dec))
+      [:drag pos]
+      (inner-erase state pos)
 
-    [:press pos]
-    (do
-      (begin-action state)
-      (inner-draw state pos))
+      [:release pos]
+      (do
+        (push-action state |(put state :last-pos nil))
+        (end-action state)))
 
-    [:drag pos]
-    (inner-draw state pos)
+    (match ev
+      [:scroll n]
+      (if (pos? n)
+        (:update state :zoom inc)
+        (:update state :zoom dec))
 
-    [:release pos]
-    (do
-      (push-action state |(put state :last-pos nil))
-      (end-action state)))
+      [:press pos]
+      (do
+        (begin-action state)
+        (inner-draw state pos))
 
-  (end-texture-mode))
+      [:drag pos]
+      (inner-draw state pos)
+
+      [:release pos]
+      (do
+        (push-action state |(put state :last-pos nil))
+        (end-action state)))))
 
 
 (defn hsv->rgb
@@ -540,6 +571,12 @@
         [:text {:color :white
                 :size 22
                 :text (string "Nof actions: " (length (get-in props [:canvas :actions])))}]]]
+
+      [:text {:color :white
+              :size 22
+              :text (if (get-in props [:canvas :erase])
+                      "Erasing"
+                      "")}]
       [:block {:width 150 :height 150}
        [:background {:color :gray}
         [:padding {:all 6}
