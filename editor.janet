@@ -167,7 +167,8 @@
   (let [modpos ;(zoom-pos-smaller (state :zoom) pos)
         [x y] modpos
         size (state :size)
-        height (state :height)]
+        height (state :height)
+        hex (rgb->hex (state :color))]
     (def args [(state :last-pos)
                (state :size)
                modpos
@@ -178,7 +179,7 @@
                           (get-render-texture rt)
                           [x (- (- height y) size) size size]
                           (array/new-filled (* size size)
-                                            (rgb->hex (state :color)))))
+                                            hex)))
 
     (put state :last-pos modpos))
 
@@ -579,7 +580,7 @@
                (props :size))
             (* (props :zoom)
                (props :size))
-            :purple)))
+            (props :color))))
 
       :relative-sizing rs/block-sizing
       :children []
