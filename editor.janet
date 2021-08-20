@@ -21,6 +21,44 @@
 (update canvas-state :color |(or $ [0 0 0]))
 (update canvas-state :bg-color |(or $ :white))
 
+(defn rgb->hsv
+  [r g b &opt a]
+  #function rgb2hsv(r,g,b) {
+  #  let v=Math.max(r,g,b), c=v-Math.min(r,g,b);
+  #  let h= c && ((v==r) ? (g-b)/c : ((v==g) ? 2+(b-r)/c : 4+(r-g)/c)); 
+  #  return [60*(h<0?h+6:h), v&&c/v, v];
+  #}
+  (let [v (max r g b)
+        c (- v (min r g b))
+        h (if (zero? c) 0
+            (cond (= v r) (/ (- g b) c)
+              (= v g) (+ 2 (/ (- b r) c))
+              #else
+              (+ 4 (/ (- r g) c))))
+        hsv @[(/ (* 60 (if (< h 0) (+ h 6) h)) 360)
+              (if (zero? v) 0 (/ c v))
+              v]]
+    (when a
+      (array/push hsv a))
+    hsv))
+
+(defn color-at-pos
+  [{:render-texture render-texture
+    :width w
+    :height h}
+   x y]
+  (let [pixels (-> render-texture
+                   get-render-texture
+                   get-texture-data
+                   get-image-data)
+        y (- (dec h) y) # h is inversed for render textures
+]
+    (get pixels (+ (* y w) x))))
+
+(comment
+  #
+)
+
 (unless (canvas-state :render-texture)
   (put canvas-state :render-texture
        (load-render-texture
@@ -150,7 +188,7 @@
   [(math/floor (* x v)) (math/floor (* y v))])
 
 (defn rgb->hex
-  [[r g b &opt a]]
+  [r g b &opt a]
   (default a 1)
 
   (+ (blshift (math/floor (* 255 r)) (* 4 6))
@@ -168,7 +206,7 @@
         [x y] modpos
         size (state :size)
         height (state :height)
-        hex (rgb->hex (state :color))]
+        hex (rgb->hex ;(state :color))]
     (def args [(state :last-pos)
                (state :size)
                modpos
@@ -201,13 +239,29 @@
                             0x00000000)))
     (put state :last-pos modpos)))
 
+(defn set-rgb
+  [state rgb]
+  (let [[h s v a] (rgb->hsv ;rgb)]
+    (-> state
+        (:put :color rgb)
+        (:put :alpha a)
+        (:put :hue h)
+        (:put :saturation s)
+        (:put :value v))))
 
 (defn handle-ev
   [state ev]
   (def {:render-texture rt
-        :erase erase} state)
+        :mode mode} state)
 
-  (if erase
+  (case mode
+    :color-pick
+    (match ev
+      ['(or (= (ev 0) :press)
+            (= (ev 0) :drag)) pos]
+      (set-rgb state (color-at-pos state ;(zoom-pos-smaller (state :zoom) pos))))
+
+    :erase
     (match ev
       [:press pos]
       (do
@@ -221,7 +275,7 @@
       [:scroll n]
       (if (pos? n)
         (:update state :zoom inc)
-        (:update state :zoom dec))
+        (:update state :zoom |(max 1 (dec $))))
 
       [:press pos]
       (do
@@ -233,7 +287,7 @@
 
 
 (defn hsv->rgb
-  [h s v]
+  [h s v &opt a]
   (def i (math/floor (* h 6)))
   (def f (- (* h 6) i))
   (def p (* v (- 1 s)))
@@ -245,7 +299,23 @@
            2 @[p v t]
            3 @[p q v]
            4 @[t p v]
-           5 @[v p q])))
+           5 @[v p q]))
+  (when a (array/push c a))
+  c)
+
+(comment
+  # conversion test
+  (let [rgb [(math/random) (math/random) (math/random)]
+        hsv (rgb->hsv ;rgb)
+        new-rgb (hsv->rgb ;hsv)]
+    (prin "rgb: ")
+    (pp rgb)
+    (prin "hsv: ")
+    (pp hsv)
+    (prin "hsv->rgb: ")
+    (pp new-rgb))
+  #
+)
 
 (defonce color-picker-state @{})
 
@@ -434,6 +504,24 @@
        [:background {:color (if selected :white :black)}
         [:block {:height size}]]]]])
 
+  (defn mode-button
+    [{:text text
+      :mode mode}]
+    (let [active (= mode (get props :mode))]
+      [:padding {:top 4}
+       [:background {:color (when active
+                              0x000000aa)}
+        [:block {}
+         [:clickable {:on-click (fn [_]
+                                  (:update props :mode
+                                           |(unless (= $ mode)
+                                              mode)))}
+          [:padding {:all 6}
+           [:text {:size 22
+                   :color (when active
+                            :white)
+                   :text text}]]]]]]))
+
   (defn button
     [{:on-click f} & [label]]
     [:padding {:top 4}
@@ -464,18 +552,14 @@
     [:block {}
      (size-button 5)]
 
-    [:padding {:top 4}
-     [:background {:color (when (props :erase)
-                            0x000000aa)}
-      [:block {}
-       [:clickable {:on-click (fn [_]
-                                (:update props :erase not))}
-        [:padding {:all 6}
-         [:text {:size 22
-                 :color (when (props :erase)
-                          :white)
-                 :text
-                 "Erase"}]]]]]]
+    [mode-button {:active? (props :erase)
+                  :mode :erase
+                  :text "Erase"}]
+
+    [mode-button {:active? (props :color-pick)
+                  :mode :color-pick
+                  :text "Color pick"}]
+
     [button {:on-click (fn [_]
                          (print "huh?")
 
@@ -495,14 +579,14 @@
      [:text {:size 22
              :text "Redo"}]]
 
-    [:padding {:top 8}
+    [:padding {:top 8 :left 6}
      [:text {:size 18
-             :text (string "Zoom: " (props :zoom))}]
-     [:row {}
-      (zoom-button 1)
-      (zoom-button 4)
-      (zoom-button 8)
-      (zoom-button 12)]]]])
+             :text (string "Zoom: " (props :zoom) "x")}]]
+    [:row {}
+     (zoom-button 1)
+     (zoom-button 4)
+     (zoom-button 8)
+     (zoom-button 12)]]])
 
 (defn canvas
   [props]
@@ -563,24 +647,40 @@
               0
               :white))
 
-        (when-let [[x y] #(props :last-mouse-pos)
-                   (get-mouse-position)
-                   x (- x ox)
-                   y (- y oy)]
+        (let [[x y] (get-mouse-position)
+              x (- x ox)
+              y (- y oy)
+              size (* (props :zoom)
+                      (props :size))]
           (if (and (> x 0)
-                   (< x w))
+                   (< x w)
+                   (> size 2))
             (hide-cursor)
             (show-cursor))
-          (draw-rectangle
-            (* (props :zoom)
-               (math/floor (/ x (props :zoom))))
-            (* (props :zoom)
-               (math/floor (/ y (props :zoom))))
-            (* (props :zoom)
-               (props :size))
-            (* (props :zoom)
-               (props :size))
-            (props :color))))
+          (let [realx (math/round (- x (/ size 2)))
+                realy (math/round (- y (/ size 2)))
+                flat-x (* (props :zoom)
+                          (math/floor (/ x (props :zoom))))
+                flat-y (* (props :zoom)
+                          (math/floor (/ y (props :zoom))))
+                x-diff (- x (+ flat-x (/ size 2)))
+                y-diff (- y (+ flat-y (/ size 2)))
+                nudge-ratio-x (max -1 (min 1 (* 0.002 x-diff x-diff)))
+                nudge-ratio-y (max -1 (min 1 (* 0.002 y-diff y-diff)))
+                extra-x (math/round (* nudge-ratio-x x-diff))
+                extra-y (math/round (* nudge-ratio-y y-diff))
+                rx (+ flat-x extra-x)
+                ry (+ flat-y extra-y)]
+
+            (if (= size 1)
+              (draw-pixel rx ry :purple)
+              (do
+                (draw-rectangle
+                  rx ry size size
+                  (props :color))
+                (draw-rectangle-lines
+                  realx realy size size
+                  0x00000099))))))
 
       :relative-sizing rs/block-sizing
       :children []
